@@ -18,13 +18,13 @@ jobs:
       - name: Install host deps (libclang, cmake)
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake libclang-dev clang
-          # 定位 libclang（排除 libclang-cpp 内部库）；找不到立刻报错而非静默传空值
-          find /usr/lib -name 'libclang*.so*' | head -8
-          LCP=$(find /usr/lib -name 'libclang*.so*' | grep -v clang-cpp | head -1 | xargs -r dirname)
-          if [ -z "$LCP" ] || [ ! -d "$LCP" ]; then echo "!! 未找到 libclang"; exit 1; fi
-          echo "选定 LIBCLANG_PATH=$LCP"
-          echo "LIBCLANG_PATH=$LCP" >> "$GITHUB_ENV"
+          sudo apt-get install -y cmake libclang-18-dev clang-18
+          # ubuntu-24.04 钉死后 LLVM 固定为 18，直接确定性指定
+          ls /usr/lib/llvm-18/lib/ | grep -i clang || true
+          if [ ! -e /usr/lib/llvm-18/lib/libclang-18.so.1 ]; then
+            echo "!! /usr/lib/llvm-18/lib/libclang-18.so.1 不存在"; exit 1
+          fi
+          echo "LIBCLANG_PATH=/usr/lib/llvm-18/lib" >> "$GITHUB_ENV"
 
       - name: Ensure android rust targets
         run: rustup target add aarch64-linux-android x86_64-linux-android
@@ -36,6 +36,8 @@ jobs:
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Install cargo-ndk
         uses: taiki-e/install-action@v2
