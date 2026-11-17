@@ -18,7 +18,8 @@
 |---|---|
 | [docs/01-requirements.md](docs/01-requirements.md) | 需求文档：场景、功能清单（P0/P1/P2）、非功能需求、验收标准 |
 | [docs/02-architecture.md](docs/02-architecture.md) | 架构设计：技术选型、数据流水线、线程模型、配置设计、风险对策 |
-| [docs/03-ui-design.md](docs/03-ui-design.md) | UI 设计：布局线框图、组件层级树、状态流转线性图、视觉规范 |
+| [docs/03-ui-design.md](docs/03-ui-design.md) | UI 设计（桌面）：布局线框图、组件层级树、状态流转线性图、视觉规范 |
+| [docs/04-android-ui-design.md](docs/04-android-ui-design.md) | UI 设计（安卓）：主界面线框图、权限/播报时序、Material 3 规范、与桌面差异对照 |
 
 ## 技术栈
 

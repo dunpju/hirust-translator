@@ -3,7 +3,9 @@ name: Android
 on:
   push:
     branches: [master, main]
+    paths: ['src/**', 'android/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/android.yml']
   pull_request:
+    paths: ['src/**', 'android/**', 'Cargo.toml', 'Cargo.lock', '.github/workflows/android.yml']
   workflow_dispatch:
 
 jobs:

@@ -5,7 +5,7 @@
 | 版本 | v1.0 |
 | 日期 | 2026-11-17 |
 | 状态 | 定稿（M1） |
-| 关联文档 | [需求文档](01-requirements.md) · [架构设计](02-architecture.md) |
+| 关联文档 | [需求文档](01-requirements.md) · [架构设计](02-architecture.md) · [安卓 UI 设计](04-android-ui-design.md) |
 
 ## 1. 设计原则
 
