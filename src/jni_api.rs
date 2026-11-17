@@ -13,6 +13,15 @@ use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc, Condvar, Mutex};
 use std::time::Duration;
 
+/// UniFFI 错误类型（Kotlin 映射为异常类；String 不能直接作抛错类型）
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum HirustError {
+    #[error("配置错误: {0}")]
+    Config(String),
+    #[error("引擎错误: {0}")]
+    Engine(String),
+}
+
 /// Kotlin 侧回调（UniFFI callback interface）
 #[uniffi::export(callback_interface)]
 pub trait HirustCallback: Send + Sync {
@@ -88,12 +97,12 @@ impl HirustEngine {
         cfg_toml: String,
         model_dir: String,
         callback: Box<dyn HirustCallback>,
-    ) -> Result<Arc<Self>, String> {
+    ) -> Result<Arc<Self>, HirustError> {
         let callback: Arc<dyn HirustCallback> = Arc::from(callback);
         let mut cfg = if cfg_toml.trim().is_empty() {
             Config::default()
         } else {
-            toml::from_str(&cfg_toml).map_err(|e| format!("解析配置失败: {e}"))?
+            toml::from_str(&cfg_toml).map_err(|e| HirustError::Config(format!("解析配置失败: {e}")))?
         };
         // 模型固定落在 App 私有目录
         let model_path = Path::new(&model_dir).join(model_dl::model_file_name(&cfg.asr.model));
@@ -103,12 +112,13 @@ impl HirustEngine {
         let done = Arc::new((Mutex::new(false), Condvar::new()));
         let sink = Arc::new(CallbackSink { cb: callback.clone(), done: done.clone() });
 
-        let rt = tokio::runtime::Runtime::new().map_err(|e| format!("创建运行时失败: {e}"))?;
+        let rt = tokio::runtime::Runtime::new()
+            .map_err(|e| HirustError::Engine(format!("创建运行时失败: {e}")))?;
         let rt_handle = rt.handle().clone();
         let _guard = rt.enter();
         let (state, mut rx, _mic_handle) =
             pipeline::start_with(cfg.clone(), Box::new(FeedMicSrc(feed.clone())), sink)
-                .map_err(|e| format!("引擎启动失败: {e:#}"))?;
+                .map_err(|e| HirustError::Engine(format!("引擎启动失败: {e:#}")))?;
 
         // 事件泵：引擎事件 → Kotlin 回调
         let cb_events = callback.clone();
@@ -136,7 +146,7 @@ impl HirustEngine {
                     }
                 }
             })
-            .map_err(|e| format!("启动事件线程失败: {e}"))?;
+            .map_err(|e| HirustError::Engine(format!("启动事件线程失败: {e}")))?;
 
         let keep_box: Box<dyn Send + Sync> = Box::new(rt);
         Ok(Arc::new(Self {

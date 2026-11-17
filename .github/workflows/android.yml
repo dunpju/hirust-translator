@@ -73,6 +73,7 @@ jobs:
           uniffi-bindgen generate \
             --library target/release/libhirust_translator.so \
             --language kotlin \
+            --no-format \
             --out-dir android/app/src/main/java/
           find android/app/src/main/java -name "*.kt" | head
 

@@ -28,6 +28,7 @@ required-features = ["desktop"]
 
 [dependencies]
 anyhow = "1"
+thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "io-std", "io-util", "fs"] }
 whisper-rs = "0.14"
 msedge-tts = { version = "0.4", default-features = false, features = ["tokio-runtime"] }
