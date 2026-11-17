@@ -9,6 +9,23 @@ license = "MIT"
 name = "hirust_translator"
 crate-type = ["lib", "cdylib"]
 
+[features]
+default = ["desktop"]
+# 桌面专属：音频设备 + GUI + CLI 美化。
+# 安卓 .so 与 UniFFI 绑定生成用 --no-default-features 构建，避免宿主系统依赖（ALSA 等）
+desktop = [
+    "dep:cpal",
+    "dep:rodio",
+    "dep:eframe",
+    "dep:colored",
+    "dep:indicatif",
+]
+
+[[bin]]
+name = "hirust-translator"
+path = "src/main.rs"
+required-features = ["desktop"]
+
 [dependencies]
 anyhow = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "signal", "io-std", "io-util", "fs"] }
@@ -24,11 +41,11 @@ uniffi = "0.32"
 
 # 桌面（Windows/macOS/Linux）专属依赖：音频设备、GUI、CLI 美化
 [target.'cfg(not(target_os = "android"))'.dependencies]
-cpal = "0.15"
-rodio = { version = "0.20", default-features = false, features = ["mp3"] }
-eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts"] }
-colored = "2"
-indicatif = "0.17"
+cpal = { version = "0.15", optional = true }
+rodio = { version = "0.20", default-features = false, features = ["mp3"], optional = true }
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts"], optional = true }
+colored = { version = "2", optional = true }
+indicatif = { version = "0.17", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_Foundation"] }

@@ -6,7 +6,7 @@
 pub mod resample;
 pub mod vad;
 
-#[cfg(not(target_os = "android"))]
+#[cfg(all(feature = "desktop", not(target_os = "android")))]
 pub mod capture;
 
 /// whisper 要求的目标采样率

@@ -481,7 +481,7 @@ pub fn start_with(
 
 // ── 桌面实现：cpal 采集 + rodio 播放 ────────────────────────
 
-#[cfg(not(target_os = "android"))]
+#[cfg(all(feature = "desktop", not(target_os = "android")))]
 pub mod desktop {
     use super::{AudioSink, Engine, MicHandle, MicSource, UnboundedReceiver};
     use crate::audio::capture;
