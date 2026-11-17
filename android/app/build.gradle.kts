@@ -55,4 +55,6 @@ dependencies {
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    // UniFFI 生成的 Kotlin 绑定依赖 JNA（Android 需 @aar 变体）
+    implementation("net.java.dev.jna:jna:5.14.0@aar")
 }

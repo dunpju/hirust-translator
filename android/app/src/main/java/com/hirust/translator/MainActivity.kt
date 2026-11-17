@@ -101,7 +101,7 @@ class MainActivity : ComponentActivity() {
                 rec.startRecording()
                 while (micRunning.get()) {
                     val n = rec.read(buf, 0, buf.size, AudioRecord.READ_BLOCKING)
-                    if (n > 0) eng.feedPcm(buf.copyOf(n), 16000u)
+                    if (n > 0) eng.feedPcm(buf.copyOf(n).toList(), 16000u)
                 }
                 rec.stop()
                 rec.release()
