@@ -10,8 +10,6 @@ jobs:
   apk:
     name: Build Android APK
     runs-on: ubuntu-latest
-    env:
-      LIBCLANG_PATH: /usr/lib/llvm-19/lib  # bindgen 需要 libclang（whisper-rs）
     steps:
       - uses: actions/checkout@v4
 
@@ -19,6 +17,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake libclang-dev clang
+          # 动态定位 libclang 供 bindgen 使用（Ubuntu 26 的 llvm 版本不定）
+          LCP=$(dirname "$(find /usr/lib -name 'libclang*.so*' 2>/dev/null | head -1)")
+          echo "发现 libclang: $LCP"
+          echo "LIBCLANG_PATH=$LCP" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
