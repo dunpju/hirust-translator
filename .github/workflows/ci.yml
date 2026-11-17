@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build & Test (Windows x64)
+    runs-on: windows-latest
+    env:
+      # bindgen 需要已知良好的 libclang（18.x）；
+      # 注：clang 23 + bindgen 0.71 有兼容 bug（whisper_full_params 生成为不透明占位）
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM 18 (libclang for bindgen)
+        shell: pwsh
+        run: |
+          # runner 可能自带更高版本 LLVM；卸载后固定装 18（clang 23 + bindgen 0.71 有兼容 bug）
+          winget uninstall -e --id LLVM.LLVM --silent | Out-Null
+          winget install -e --id LLVM.LLVM --version 18.1.8 --silent --force --accept-package-agreements --accept-source-agreements | Out-Null
+          if (-not (Test-Path "$env:LIBCLANG_PATH\libclang.dll")) { throw "libclang.dll not found" }
+          & "$env:LIBCLANG_PATH\clang.exe" --version | Select-Object -First 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --locked
+
+      - name: Unit tests
+        run: cargo test --locked
+
+      - name: Smoke test (help)
+        run: cargo run --locked -- help
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hirust-translator-windows-x64
+          path: target/debug/hirust-translator.exe
+          if-no-files-found: error

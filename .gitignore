@@ -1,0 +1,14 @@
+# Rust
+/target/
+
+# 模型与运行时生成文件
+/models/
+/config.toml
+*.part
+
+# IDE
+/.idea/
+
+# 输出
+/dist/
+build.log

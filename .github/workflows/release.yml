@@ -1,0 +1,73 @@
+name: Release
+
+# 推送 v* 标签触发：git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Release (Windows x64)
+    runs-on: windows-latest
+    env:
+      # bindgen 需要已知良好的 libclang（18.x）；
+      # 注：clang 23 + bindgen 0.71 有兼容 bug（whisper_full_params 生成为不透明占位）
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install LLVM 18 (libclang for bindgen)
+        shell: pwsh
+        run: |
+          # runner 可能自带更高版本 LLVM；卸载后固定装 18（clang 23 + bindgen 0.71 有兼容 bug）
+          winget uninstall -e --id LLVM.LLVM --silent | Out-Null
+          winget install -e --id LLVM.LLVM --version 18.1.8 --silent --force --accept-package-agreements --accept-source-agreements | Out-Null
+          if (-not (Test-Path "$env:LIBCLANG_PATH\libclang.dll")) { throw "libclang.dll not found" }
+          & "$env:LIBCLANG_PATH\clang.exe" --version | Select-Object -First 1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (release)
+        run: cargo build --release --locked
+
+      - name: Unit tests
+        run: cargo test --release --locked
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}"
+          $name = "hirust-translator-$ver-x64-windows"
+          $dir = "dist/$name"
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Copy-Item target/release/hirust-translator.exe -Destination $dir
+          Copy-Item README.md -Destination $dir
+          if (Test-Path docs) { Copy-Item docs -Destination $dir -Recurse }
+          # 生成默认配置模板（exe 同目录无 config.toml 时写到当前目录）
+          Push-Location $dir
+          & "$env:GITHUB_WORKSPACE/target/release/hirust-translator.exe" config | Out-Null
+          Pop-Location
+          Compress-Archive -Path "dist/*" -DestinationPath "$name.zip" -Force
+          Get-Item "$name.zip" | Select-Object Name, Length
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: hirust-translator-*-x64-windows.zip
+          generate_release_notes: true
+          body: |
+            ## Hirust 中英同声传译 ${{ github.ref_name }}
+
+            **下载下方 zip 解压，双击 `hirust-translator.exe` 即可使用（Windows x64）。**
+
+            - 首次运行自动下载 whisper 识别模型（base 约 142 MB，走 hf-mirror 镜像）
+            - 说中文 → 实时翻译成英文并自动朗读；运行时输入 `us` / `gb` 切换美式/英式口音（默认美式）
+            - 想启用高质量 LLM 翻译：编辑同目录 `config.toml`，填入 `api_key`（DeepSeek 等 OpenAI 兼容接口）
+            - 戴耳机使用建议把 `config.toml` 中 `echo_guard` 改为 `false`（可边播边说）
