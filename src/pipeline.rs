@@ -14,7 +14,7 @@ use crate::tts::{player::Player, EdgeTts, TtsRequest};
 use anyhow::Result;
 use cpal::traits::StreamTrait;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{mpsc, Arc, RwLock};
+use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::time::Instant;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
@@ -57,6 +57,7 @@ pub enum EngineEvent {
         ts: String,
         zh: Option<String>,
         en: String,
+        #[allow(dead_code)]
         engine: &'static str,
     },
     Notice(NoticeKind, String),
@@ -65,6 +66,8 @@ pub enum EngineEvent {
 pub struct SharedState {
     phase: RwLock<Phase>,
     accent: RwLock<Accent>,
+    /// 录音暂停（引擎保持运行，快速恢复）
+    pub paused: AtomicBool,
     pub muted: AtomicBool,
     pub echo_guard: AtomicBool,
     pub tts_enabled: AtomicBool,
@@ -72,6 +75,11 @@ pub struct SharedState {
     pub tts_playing: AtomicBool,
     /// 输入电平（f32 位模式），供 UI 电平条读取
     pub level: AtomicU32,
+    voice_us: RwLock<String>,
+    voice_gb: RwLock<String>,
+    rate: RwLock<String>,
+    pitch: RwLock<String>,
+    tts_tx: Mutex<Option<UnboundedSender<TtsRequest>>>,
     events: UnboundedSender<EngineEvent>,
 }
 
@@ -97,6 +105,49 @@ impl SharedState {
         f32::from_bits(self.level.load(Ordering::Relaxed))
     }
 
+    pub fn voice_us(&self) -> String {
+        self.voice_us.read().unwrap().clone()
+    }
+
+    pub fn voice_gb(&self) -> String {
+        self.voice_gb.read().unwrap().clone()
+    }
+
+    pub fn rate(&self) -> String {
+        self.rate.read().unwrap().clone()
+    }
+
+    pub fn pitch(&self) -> String {
+        self.pitch.read().unwrap().clone()
+    }
+
+    /// 热更新语音参数（设置面板"保存"时调用，立即生效）
+    pub fn set_voice_params(&self, us: String, gb: String, rate: String, pitch: String) {
+        *self.voice_us.write().unwrap() = us;
+        *self.voice_gb.write().unwrap() = gb;
+        *self.rate.write().unwrap() = rate;
+        *self.pitch.write().unwrap() = pitch;
+    }
+
+    /// 用当前口音播报文本（重播/试听）；返回是否成功入队
+    pub fn speak(&self, text: String) -> bool {
+        let voice = match self.accent() {
+            Accent::Us => self.voice_us(),
+            Accent::Gb => self.voice_gb(),
+        };
+        self.speak_with(voice, self.rate(), self.pitch(), text)
+    }
+
+    /// 指定音色播报（设置面板"试听"）
+    pub fn speak_with(&self, voice: String, rate: String, pitch: String, text: String) -> bool {
+        match self.tts_tx.lock().unwrap().as_ref() {
+            Some(tx) => tx
+                .send(TtsRequest { text, voice, rate, pitch })
+                .is_ok(),
+            None => false,
+        }
+    }
+
     fn notice(&self, kind: NoticeKind, msg: impl Into<String>) {
         let _ = self.events.send(EngineEvent::Notice(kind, msg.into()));
     }
@@ -112,8 +163,15 @@ impl Engine {
         self.state.clone()
     }
 
+    /// 播报文本（重播/试听入口）
+    #[allow(dead_code)]
+    pub fn speak(&self, text: String) -> bool {
+        self.state.speak(text)
+    }
+
     pub fn stop(self) {
         self.state.running.store(false, Ordering::SeqCst);
+        *self.state.tts_tx.lock().unwrap() = None;
         let _ = self.stream.pause();
         // drop(self) 释放音频流与各通道，各线程自然退出
     }
@@ -125,12 +183,18 @@ pub fn start(cfg: Config) -> Result<(Engine, UnboundedReceiver<EngineEvent>)> {
     let state = Arc::new(SharedState {
         phase: RwLock::new(Phase::Idle),
         accent: RwLock::new(cfg.tts.accent),
+        paused: AtomicBool::new(false),
         muted: AtomicBool::new(false),
         echo_guard: AtomicBool::new(cfg.ui.echo_guard),
         tts_enabled: AtomicBool::new(cfg.tts.enabled),
         running: AtomicBool::new(true),
         tts_playing: AtomicBool::new(false),
         level: AtomicU32::new(0),
+        voice_us: RwLock::new(cfg.tts.voice_us.clone()),
+        voice_gb: RwLock::new(cfg.tts.voice_gb.clone()),
+        rate: RwLock::new(cfg.tts.rate.clone()),
+        pitch: RwLock::new(cfg.tts.pitch.clone()),
+        tts_tx: Mutex::new(None),
         events: ev_tx,
     });
 
@@ -161,18 +225,32 @@ pub fn start(cfg: Config) -> Result<(Engine, UnboundedReceiver<EngineEvent>)> {
                     let _ = state.events.send(EngineEvent::Calibrating);
                 }
                 let mut was_speaking = false;
+                let mut was_paused = false;
                 while let Ok(chunk) = raw_rx.recv() {
                     if !state.running.load(Ordering::Relaxed) {
                         break;
                     }
+                    // 暂停门：暂停时丢弃输入并回到待机相位
+                    let paused = state.paused.load(Ordering::Relaxed);
+                    if paused != was_paused {
+                        was_paused = paused;
+                        match state.phase() {
+                            Phase::Listening | Phase::Capturing | Phase::Idle => {
+                                state.set_phase(if paused { Phase::Idle } else { Phase::Listening })
+                            }
+                            _ => {}
+                        }
+                    }
                     // 回声防护：播报期间丢弃输入
-                    let allow = !(state.echo_guard.load(Ordering::Relaxed)
-                        && state.tts_playing.load(Ordering::Relaxed));
+                    let allow = !paused
+                        && !(state.echo_guard.load(Ordering::Relaxed)
+                            && state.tts_playing.load(Ordering::Relaxed));
                     let mut pcm16k = Vec::new();
                     resampler.process(&chunk, &mut pcm16k);
                     let mut segments = Vec::new();
                     vad.process(&pcm16k, allow, &mut segments);
-                    state.level.store(vad.level().to_bits(), Ordering::Relaxed);
+                    let lv = if paused { 0.0 } else { vad.level() };
+                    state.level.store(lv.to_bits(), Ordering::Relaxed);
                     if let Some(th) = vad.take_calibration_result() {
                         let _ = state.events.send(EngineEvent::Calibrated(th));
                     }
@@ -196,15 +274,12 @@ pub fn start(cfg: Config) -> Result<(Engine, UnboundedReceiver<EngineEvent>)> {
 
     // ── 3. 识别 + 翻译线程 ────────────────────────────────────
     let (tts_tx, mut tts_rx) = unbounded_channel::<TtsRequest>();
+    *state.tts_tx.lock().unwrap() = Some(tts_tx.clone());
     {
         let state = state.clone();
         let asr_cfg = cfg.asr.clone();
         let engine_kind = translate::effective(&cfg.translate);
         let llm = LlmClient::new(&cfg.translate.llm)?;
-        let voice_us = cfg.tts.voice_us.clone();
-        let voice_gb = cfg.tts.voice_gb.clone();
-        let rate = cfg.tts.rate.clone();
-        let pitch = cfg.tts.pitch.clone();
         let rt = tokio::runtime::Handle::current();
 
         std::thread::Builder::new()
@@ -320,14 +395,14 @@ pub fn start(cfg: Config) -> Result<(Engine, UnboundedReceiver<EngineEvent>)> {
                     } else {
                         state.set_phase(Phase::Speaking);
                         let voice = match state.accent() {
-                            Accent::Us => voice_us.clone(),
-                            Accent::Gb => voice_gb.clone(),
+                            Accent::Us => state.voice_us(),
+                            Accent::Gb => state.voice_gb(),
                         };
                         let _ = tts_tx.send(TtsRequest {
                             text: en,
                             voice,
-                            rate: rate.clone(),
-                            pitch: pitch.clone(),
+                            rate: state.rate(),
+                            pitch: state.pitch(),
                         });
                     }
                 }

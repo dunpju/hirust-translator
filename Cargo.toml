@@ -20,6 +20,7 @@ futures-util = "0.3"
 indicatif = "0.17"
 colored = "2"
 dirs = "6"
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [target.'cfg(windows)'.dependencies]

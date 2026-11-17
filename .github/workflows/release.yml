@@ -52,7 +52,7 @@ jobs:
           if (Test-Path docs) { Copy-Item docs -Destination $dir -Recurse }
           # 生成默认配置模板（exe 同目录无 config.toml 时写到当前目录）
           Push-Location $dir
-          & "$env:GITHUB_WORKSPACE/target/release/hirust-translator.exe" config | Out-Null
+          & "$env:GITHUB_WORKSPACE/target/release/hirust-translator.exe" cli config | Out-Null
           Pop-Location
           Compress-Archive -Path "dist/*" -DestinationPath "$name.zip" -Force
           Get-Item "$name.zip" | Select-Object Name, Length
@@ -65,9 +65,10 @@ jobs:
           body: |
             ## Hirust 中英同声传译 ${{ github.ref_name }}
 
-            **下载下方 zip 解压，双击 `hirust-translator.exe` 即可使用（Windows x64）。**
+            **下载下方 zip 解压，双击 `hirust-translator.exe` 即可使用（Windows x64 图形界面）。**
 
             - 首次运行自动下载 whisper 识别模型（base 约 142 MB，走 hf-mirror 镜像）
-            - 说中文 → 实时翻译成英文并自动朗读；运行时输入 `us` / `gb` 切换美式/英式口音（默认美式）
-            - 想启用高质量 LLM 翻译：编辑同目录 `config.toml`，填入 `api_key`（DeepSeek 等 OpenAI 兼容接口）
-            - 戴耳机使用建议把 `config.toml` 中 `echo_guard` 改为 `false`（可边播边说）
+            - 说中文 → 实时翻译成英文并自动朗读；快捷键 `1`/`2` 切换美式/英式口音（默认美式），`Space` 开始/暂停
+            - 想启用高质量 LLM 翻译：设置面板（Ctrl+,）填入 API Key（DeepSeek 等 OpenAI 兼容接口），或编辑同目录 `config.toml`
+            - 戴耳机使用建议关闭「回声防护」（快捷键 `E`），可边播边说
+            - 命令行模式：`hirust-translator.exe cli run`

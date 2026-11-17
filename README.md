@@ -43,10 +43,12 @@
 
 ```bash
 cargo build --release
-./target/release/hirust-translator.exe          # 启动实时翻译（首次自动下载模型）
-./target/release/hirust-translator.exe say "Hello world"   # TTS 试音
-./target/release/hirust-translator.exe devices   # 查看输入设备
+./target/release/hirust-translator.exe                      # 图形界面（默认，首次自动下载模型）
+./target/release/hirust-translator.exe cli say "Hello"      # TTS 试音（headless）
+./target/release/hirust-translator.exe cli devices          # 查看输入设备
 ```
+
+**GUI 快捷键**：Space 开始/暂停 · 1/2 切美式/英式 · M 静音 · E 回声防护 · R 重播上句 · Ctrl+, 设置
 
 ## CI / 构建 / 发布（GitHub Actions）
 

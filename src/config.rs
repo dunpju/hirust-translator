@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// 口音：美式（默认）/ 英式
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Accent {
     Us,
@@ -26,6 +26,7 @@ impl Accent {
             Accent::Gb => "英式",
         }
     }
+    #[allow(dead_code)]
     pub fn code(&self) -> &'static str {
         match self {
             Accent::Us => "us",
@@ -34,7 +35,7 @@ impl Accent {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct AudioConfig {
     /// 留空 = 系统默认输入设备
@@ -47,7 +48,7 @@ impl Default for AudioConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct VadConfig {
     pub auto_calibrate: bool,
@@ -71,7 +72,7 @@ impl Default for VadConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct AsrConfig {
     /// tiny | base | small
@@ -92,7 +93,7 @@ impl Default for AsrConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct LlmConfig {
     pub base_url: String,
@@ -112,7 +113,7 @@ impl Default for LlmConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct TranslateConfig {
     /// llm | whisper
@@ -126,7 +127,7 @@ impl Default for TranslateConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct TtsConfig {
     pub enabled: bool,
@@ -150,7 +151,7 @@ impl Default for TtsConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct UiConfig {
     /// 回声防护：播报时暂停拾音（外放场景）
@@ -163,7 +164,7 @@ impl Default for UiConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
 #[serde(default)]
 pub struct Config {
     pub audio: AudioConfig,

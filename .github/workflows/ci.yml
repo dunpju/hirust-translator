@@ -38,8 +38,8 @@ jobs:
       - name: Unit tests
         run: cargo test --locked
 
-      - name: Smoke test (help)
-        run: cargo run --locked -- help
+      - name: Smoke test (cli help)
+        run: cargo run --locked -- cli help
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

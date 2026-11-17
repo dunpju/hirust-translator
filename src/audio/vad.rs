@@ -89,6 +89,7 @@ impl Vad {
         self.speaking
     }
 
+    #[allow(dead_code)]
     pub fn threshold(&self) -> f32 {
         self.threshold
     }

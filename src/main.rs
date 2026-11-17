@@ -1,18 +1,20 @@
-//! Hirust 中英同声传译 · M2 headless CLI
+//! Hirust 中英同声传译
 //!
 //! 用法：
-//!   hirust-translator              启动实时翻译（同 run）
-//!   hirust-translator run          启动实时翻译
-//!   hirust-translator devices      列出音频输入设备
-//!   hirust-translator download [tiny|base|small]   下载/更新识别模型
-//!   hirust-translator say <文本> [--gb]            TTS 试音（默认美式）
-//!   hirust-translator config       查看配置
+//!   hirust-translator              启动图形界面（默认）
+//!   hirust-translator gui          同上
+//!   hirust-translator cli run      启动实时翻译（headless）
+//!   hirust-translator cli devices  列出音频输入设备
+//!   hirust-translator cli download [tiny|base|small]   下载/更新识别模型
+//!   hirust-translator cli say <文本> [--gb]            TTS 试音（默认美式）
+//!   hirust-translator cli config   查看配置
 //!
-//! 运行时命令：q 退出 · us 美式 · gb 英式 · m 静音 · e 回声防护 · ? 帮助
+//! CLI 运行时命令：q 退出 · us 美式 · gb 英式 · m 静音 · e 回声防护 · ? 帮助
 
 mod asr;
 mod audio;
 mod config;
+mod gui;
 mod model_dl;
 mod pipeline;
 mod translate;
@@ -71,14 +73,18 @@ fn print_usage() {
 {}",
         "Hirust 中英同声传译".bold(),
         "用法:
-  hirust-translator [run]                      启动实时翻译
-  hirust-translator devices                    列出音频输入设备
-  hirust-translator download [tiny|base|small] 下载/更新识别模型
-  hirust-translator say <文本> [--gb]          TTS 试音（默认美式）
-  hirust-translator config                     查看配置
+  hirust-translator                启动图形界面（默认）
+  hirust-translator cli [run]      启动实时翻译（headless）
+  hirust-translator cli devices    列出音频输入设备
+  hirust-translator cli download [tiny|base|small]  下载/更新识别模型
+  hirust-translator cli say <文本> [--gb]           TTS 试音
+  hirust-translator cli config     查看配置
 
-运行时命令:
-  q 退出 · us 美式 · gb 英式 · m 静音播报 · e 回声防护 · ? 帮助"
+CLI 运行时命令:
+  q 退出 · us 美式 · gb 英式 · m 静音播报 · e 回声防护 · ? 帮助
+
+GUI 快捷键:
+  Space 开始/暂停 · 1/2 美式/英式 · M 静音 · E 回声防护 · R 重播 · Ctrl+, 设置"
     );
 }
 
@@ -87,10 +93,25 @@ async fn main() -> Result<()> {
     setup_console();
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        None | Some("gui") => gui::run(load_config()?, config_file()),
+        Some("cli") => cli_main(&args[1..]).await,
+        Some("help") | Some("-h") | Some("--help") => {
+            print_usage();
+            Ok(())
+        }
+        Some(other) => {
+            print_usage();
+            anyhow::bail!("未知命令: {other}（CLI 子命令请加 cli 前缀）")
+        }
+    }
+}
+
+async fn cli_main(rest: &[String]) -> Result<()> {
+    match rest.first().map(String::as_str) {
         None | Some("run") => cmd_run().await,
         Some("devices") => cmd_devices(),
-        Some("download") => cmd_download(args.get(1).map(String::as_str)).await,
-        Some("say") => cmd_say(&args[1..]).await,
+        Some("download") => cmd_download(rest.get(1).map(String::as_str)).await,
+        Some("say") => cmd_say(&rest[1..]).await,
         Some("config") => cmd_config(),
         Some("help") | Some("-h") | Some("--help") => {
             print_usage();
