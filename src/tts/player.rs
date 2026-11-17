@@ -6,13 +6,14 @@
 use anyhow::{Context, Result};
 
 pub struct Player {
-    tx: std::sync::mpsc::Sender<(Vec<u8>, tokio::sync::oneshot::Sender<()>)>,
+    tx: std::sync::mpsc::Sender<(Vec<u8>, std::sync::mpsc::Sender<()>)>,
 }
 
 impl Player {
     /// 启动专用播放线程（串行播放，保证译文顺序）
     pub fn spawn() -> Result<Self> {
-        let (tx, rx) = std::sync::mpsc::channel::<(Vec<u8>, tokio::sync::oneshot::Sender<()>)>();
+        let (tx, rx) =
+            std::sync::mpsc::channel::<(Vec<u8>, std::sync::mpsc::Sender<()>)>();
         std::thread::Builder::new()
             .name("audio-player".into())
             .spawn(move || {
@@ -38,10 +39,10 @@ impl Player {
         Ok(Self { tx })
     }
 
-    /// 入队播放，返回播放完成信号
-    pub fn play(&self, mp3: Vec<u8>) -> tokio::sync::oneshot::Receiver<()> {
-        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
-        // 播放线程已退出（无输出设备）时 send 失败，done_rx 立即就绪
+    /// 入队播放，返回播放完成信号（同步 mpsc，阻塞 recv 即等待播完）
+    pub fn play(&self, mp3: Vec<u8>) -> std::sync::mpsc::Receiver<()> {
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        // 播放线程已退出（无输出设备）时 send 失败，recv 立即返回 Err
         let _ = self.tx.send((mp3, done_tx));
         done_rx
     }

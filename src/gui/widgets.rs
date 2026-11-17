@@ -1,6 +1,6 @@
 //! GUI 小部件：状态胶囊、电平表、通用配色
 
-use crate::pipeline::Phase;
+use hirust_translator::pipeline::Phase;
 use eframe::egui::{self, Color32, Sense};
 
 pub const COL_BG: Color32 = Color32::from_rgb(0x1e, 0x1f, 0x24);

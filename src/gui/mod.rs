@@ -3,9 +3,9 @@
 pub mod settings;
 pub mod widgets;
 
-use crate::config::{Accent, Config};
-use crate::model_dl::{self, DlProgress};
-use crate::pipeline::{self, EngineEvent, NoticeKind, Phase, SharedState};
+use hirust_translator::config::{Accent, Config};
+use hirust_translator::model_dl::{self, DlProgress};
+use hirust_translator::pipeline::{self, EngineEvent, NoticeKind, Phase, SharedState};
 use anyhow::{anyhow, Result};
 use eframe::egui;
 use std::path::PathBuf;
@@ -409,7 +409,7 @@ impl TranslatorApp {
     fn start_engine(&mut self) {
         let cfg = self.cfg.clone();
         let _guard = self.rt.enter();
-        match pipeline::start(cfg) {
+        match pipeline::desktop::start(cfg) {
             Ok((engine, rx)) => {
                 self.state = Some(engine.state());
                 self.engine = Some(engine);

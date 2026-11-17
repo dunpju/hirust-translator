@@ -11,24 +11,19 @@
 //!
 //! CLI 运行时命令：q 退出 · us 美式 · gb 英式 · m 静音 · e 回声防护 · ? 帮助
 
-mod asr;
-mod audio;
-mod config;
 mod gui;
-mod model_dl;
-mod pipeline;
-mod translate;
-mod tts;
 
 use anyhow::{Context, Result};
 use colored::Colorize;
+use hirust_translator::config;
+use hirust_translator::model_dl::{self, ensure_model, DlProgress};
+use hirust_translator::pipeline::{self, EngineEvent, NoticeKind, Phase};
+use hirust_translator::tts::{self, player::Player, EdgeTts, TtsRequest};
+use hirust_translator::{audio, translate};
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
 use config::{Accent, Config};
-use model_dl::{ensure_model, DlProgress};
-use pipeline::{EngineEvent, NoticeKind, Phase};
-use tts::{player::Player, EdgeTts, TtsRequest};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -212,7 +207,7 @@ async fn cmd_say(args: &[String]) -> Result<()> {
     let player = Player::spawn()?;
     player
         .play(bytes)
-        .await
+        .recv()
         .map_err(|_| anyhow::anyhow!("播放失败"))?;
     Ok(())
 }
@@ -279,7 +274,7 @@ async fn cmd_run() -> Result<()> {
     println!("{}", "─".repeat(56).dimmed());
     println!("{}", "对着麦克风说中文即可。命令: q 退出 · us 美式 · gb 英式 · m 静音 · e 回声防护 · ? 帮助".dimmed());
 
-    let (engine, mut rx) = match pipeline::start(cfg) {
+    let (engine, mut rx) = match pipeline::desktop::start(cfg) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("{}", format!("启动失败: {e:#}").red());

@@ -1,18 +1,18 @@
-//! 引擎编排：采集 → VAD 分段 → 识别/翻译 → TTS 播报
+//! 引擎编排（平台无关）：PCM 推流 → VAD 分段 → 识别/翻译 → TTS 合成 → 音频输出
 //!
-//! 线程模型见 docs/02-architecture.md §3：
-//! - cpal 音频回调（不可阻塞）→ 无界通道 → VAD 线程
-//! - VAD 线程：重采样 48k→16k + 断句，语音段送识别线程
-//! - 识别线程：whisper 推理 + LLM 翻译（block_on）
-//! - TTS 任务（tokio）：合成 → rodio 同步播放，播报期间置 tts_playing（回声防护）
+//! 音频输入/输出经 trait 注入：
+//! - 桌面（desktop 模块）：cpal 采集 + rodio 播放
+//! - 安卓（jni_api 模块）：Kotlin AudioRecord 推流 + mp3 回调 Kotlin 播放
+//!
+//! 线程模型见 docs/02-architecture.md §3。
 
 use crate::asr::{Asr, AsrMode};
-use crate::audio::{capture, resample::Resampler, vad::Vad, TARGET_SAMPLE_RATE};
+use crate::audio::{resample::Resampler, vad::Vad, TARGET_SAMPLE_RATE};
 use crate::config::{Accent, Config};
 use crate::translate::{self, llm::LlmClient};
-use crate::tts::{player::Player, EdgeTts, TtsRequest};
+use crate::tts::{EdgeTts, TtsRequest};
 use anyhow::Result;
-use cpal::traits::StreamTrait;
+use std::any::Any;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::time::Instant;
@@ -141,9 +141,7 @@ impl SharedState {
     /// 指定音色播报（设置面板"试听"）
     pub fn speak_with(&self, voice: String, rate: String, pitch: String, text: String) -> bool {
         match self.tts_tx.lock().unwrap().as_ref() {
-            Some(tx) => tx
-                .send(TtsRequest { text, voice, rate, pitch })
-                .is_ok(),
+            Some(tx) => tx.send(TtsRequest { text, voice, rate, pitch }).is_ok(),
             None => false,
         }
     }
@@ -151,10 +149,18 @@ impl SharedState {
     fn notice(&self, kind: NoticeKind, msg: impl Into<String>) {
         let _ = self.events.send(EngineEvent::Notice(kind, msg.into()));
     }
+
+    /// 停止全链路（等价于 Engine::stop，供无 Engine 句柄的宿主使用）
+    pub fn shutdown(&self) {
+        self.running.store(false, Ordering::SeqCst);
+        *self.tts_tx.lock().unwrap() = None;
+    }
 }
 
 pub struct Engine {
-    stream: cpal::Stream,
+    /// 麦克风保活句柄（cpal Stream 在 Windows 非 Send，故用 Any；仅桌面存在）
+    #[cfg(not(target_os = "android"))]
+    _mic_keep: Option<Box<dyn Any>>,
     pub state: Arc<SharedState>,
 }
 
@@ -170,15 +176,53 @@ impl Engine {
     }
 
     pub fn stop(self) {
-        self.state.running.store(false, Ordering::SeqCst);
-        *self.state.tts_tx.lock().unwrap() = None;
-        let _ = self.stream.pause();
-        // drop(self) 释放音频流与各通道，各线程自然退出
+        self.state.shutdown();
+        // drop(self) 释放保活句柄与各通道，各线程自然退出
     }
 }
 
-/// 启动引擎；必须在 tokio 运行时内调用
-pub fn start(cfg: Config) -> Result<(Engine, UnboundedReceiver<EngineEvent>)> {
+// ── 平台无关的音频注入接口 ──────────────────────────────────
+
+/// 麦克风源：持续向通道输送原始采样（单声道 f32，采样率自报）
+pub trait MicSource: Send + 'static {
+    /// 启动采集；返回采样率与保活句柄（drop 即停止）
+    fn start(self: Box<Self>, tx: mpsc::Sender<Vec<f32>>) -> Result<MicHandle>;
+}
+
+pub struct MicHandle {
+    pub sample_rate: u32,
+    #[cfg(not(target_os = "android"))]
+    pub keep: Option<Box<dyn Any>>,
+}
+
+impl MicHandle {
+    pub fn new(sample_rate: u32) -> Self {
+        Self {
+            sample_rate,
+            #[cfg(not(target_os = "android"))]
+            keep: None,
+        }
+    }
+
+    #[cfg(not(target_os = "android"))]
+    pub fn with_keep(mut self, keep: Box<dyn Any>) -> Self {
+        self.keep = Some(keep);
+        self
+    }
+}
+
+/// 音频输出：阻塞播放 mp3 直至结束（由 TTS 任务在阻塞线程调用）
+pub trait AudioSink: Send + Sync + 'static {
+    fn play(&self, mp3: Vec<u8>) -> Result<()>;
+}
+
+/// 启动引擎；必须在 tokio 运行时内调用。
+/// 返回共享状态、事件流与麦克风句柄（桌面端需用句柄构造 Engine 保活）。
+pub fn start_with(
+    cfg: Config,
+    mic: Box<dyn MicSource>,
+    sink: Arc<dyn AudioSink>,
+) -> Result<(Arc<SharedState>, UnboundedReceiver<EngineEvent>, MicHandle)> {
     let (ev_tx, ev_rx) = unbounded_channel();
     let state = Arc::new(SharedState {
         phase: RwLock::new(Phase::Idle),
@@ -198,23 +242,16 @@ pub fn start(cfg: Config) -> Result<(Engine, UnboundedReceiver<EngineEvent>)> {
         events: ev_tx,
     });
 
-    // ── 1. 麦克风采集 ──────────────────────────────────────────
+    // ── 1. 麦克风源 ────────────────────────────────────────────
     let (raw_tx, raw_rx) = mpsc::channel::<Vec<f32>>();
-    let cap = capture::start(
-        if cfg.audio.input_device.is_empty() { None } else { Some(&cfg.audio.input_device) },
-        raw_tx,
-    )?;
-    state.notice(
-        NoticeKind::Info,
-        format!("麦克风: {}（{}Hz, {}ch）", cap.device_name, cap.sample_rate, cap.channels),
-    );
+    let mic_handle = mic.start(raw_tx)?;
 
     // ── 2. VAD 分段线程 ────────────────────────────────────────
     let (seg_tx, seg_rx) = mpsc::channel::<Vec<f32>>();
     {
         let state = state.clone();
         let vad_cfg = cfg.vad.clone();
-        let sample_rate = cap.sample_rate;
+        let sample_rate = mic_handle.sample_rate;
         std::thread::Builder::new()
             .name("vad".into())
             .spawn(move || {
@@ -390,7 +427,7 @@ pub fn start(cfg: Config) -> Result<(Engine, UnboundedReceiver<EngineEvent>)> {
 
                     let muted = state.muted.load(Ordering::Relaxed);
                     let tts_on = state.tts_enabled.load(Ordering::Relaxed);
-                    if muted || !tts_on {
+                    if muted || !tts_on || en.trim().is_empty() {
                         state.set_phase(Phase::Listening);
                     } else {
                         state.set_phase(Phase::Speaking);
@@ -409,24 +446,21 @@ pub fn start(cfg: Config) -> Result<(Engine, UnboundedReceiver<EngineEvent>)> {
             })?;
     }
 
-    // ── 4. TTS 播报任务（串行队列） ──────────────────────────
+    // ── 4. TTS 播报任务（串行队列：合成 → 输出） ─────────────
     {
         let state = state.clone();
         tokio::spawn(async move {
-            let player = match Player::spawn() {
-                Ok(p) => p,
-                Err(e) => {
-                    state.notice(NoticeKind::Warn, format!("音频输出不可用，仅文字模式: {e:#}"));
-                    return;
-                }
-            };
             while let Some(req) = tts_rx.recv().await {
                 state.tts_playing.store(true, Ordering::Relaxed);
 
                 match EdgeTts::synthesize(&req).await {
                     Ok(audio) => {
-                        if player.play(audio).await.is_err() {
-                            state.notice(NoticeKind::Warn, "播放失败（输出设备异常）".to_string());
+                        let s = sink.clone();
+                        let played = tokio::task::spawn_blocking(move || s.play(audio)).await;
+                        if let Err(e) = played {
+                            state.notice(NoticeKind::Warn, format!("播放失败: {e:#}"));
+                        } else if let Err(e) = played.unwrap() {
+                            state.notice(NoticeKind::Warn, format!("播放失败: {e:#}"));
                         }
                     }
                     Err(e) => {
@@ -442,5 +476,72 @@ pub fn start(cfg: Config) -> Result<(Engine, UnboundedReceiver<EngineEvent>)> {
         });
     }
 
-    Ok((Engine { stream: cap.stream, state }, ev_rx))
+    Ok((state, ev_rx, mic_handle))
+}
+
+// ── 桌面实现：cpal 采集 + rodio 播放 ────────────────────────
+
+#[cfg(not(target_os = "android"))]
+pub mod desktop {
+    use super::{AudioSink, Engine, MicHandle, MicSource, UnboundedReceiver};
+    use crate::audio::capture;
+    use crate::config::Config;
+    use crate::tts::player::Player;
+    use anyhow::{anyhow, Result};
+    use std::sync::mpsc;
+    use std::sync::Arc;
+
+    pub struct CpalMic {
+        device: Option<String>,
+    }
+
+    impl CpalMic {
+        pub fn new(device: Option<String>) -> Self {
+            Self { device }
+        }
+    }
+
+    impl MicSource for CpalMic {
+        fn start(self: Box<Self>, tx: mpsc::Sender<Vec<f32>>) -> Result<MicHandle> {
+            let cap = capture::start(self.device.as_deref(), tx)?;
+            Ok(MicHandle::new(cap.sample_rate).with_keep(Box::new(cap.stream)))
+        }
+    }
+
+    pub struct RodioSink {
+        player: Player,
+    }
+
+    impl RodioSink {
+        pub fn new() -> Result<Self> {
+            Ok(Self { player: Player::spawn()? })
+        }
+    }
+
+    impl AudioSink for RodioSink {
+        fn play(&self, mp3: Vec<u8>) -> Result<()> {
+            self.player
+                .play(mp3)
+                .recv()
+                .map_err(|_| anyhow!("播放失败"))
+        }
+    }
+
+    /// 桌面便捷启动（保持原 pipeline::start 行为）
+    pub fn start(cfg: Config) -> Result<(Engine, UnboundedReceiver<super::EngineEvent>)> {
+        let sink = Arc::new(RodioSink::new()?);
+        let mic = CpalMic::new(if cfg.audio.input_device.is_empty() {
+            None
+        } else {
+            Some(cfg.audio.input_device.clone())
+        });
+        let (state, rx, mic_handle) = super::start_with(cfg, Box::new(mic), sink)?;
+        Ok((
+            Engine {
+                _mic_keep: mic_handle.keep,
+                state,
+            },
+            rx,
+        ))
+    }
 }

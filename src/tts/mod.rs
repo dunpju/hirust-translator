@@ -1,5 +1,7 @@
 //! 语音合成：Edge-TTS 神经音色（en-US / en-GB），产出 mp3 字节
+//! 播放（rodio）仅桌面；安卓端 mp3 回调 Kotlin 播放
 
+#[cfg(not(target_os = "android"))]
 pub mod player;
 
 use anyhow::{anyhow, Context, Result};

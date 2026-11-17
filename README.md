@@ -64,13 +64,22 @@ git tag v0.1.0
 git push origin v0.1.0     # 触发发布流水线
 ```
 
+## Android 版
+
+Kotlin/Compose 原生 UI + Rust 引擎（UniFFI 绑定，`libhirust_translator.so`）：
+
+- **职责划分**：Kotlin 负责 AudioRecord 采音 / MediaPlayer 播放 / 权限与 UI；Rust 负责 VAD 断句 → whisper 识别 → 翻译 → Edge-TTS 合成
+- **CI 自动出包**：`android.yml` 工作流交叉编译（arm64-v8a + x86_64）→ 生成 Kotlin 绑定 → Gradle 打 debug APK → 上传 artifact，无需本地 Android Studio
+- 工程位于 `android/`，绑定生成自 `src/jni_api.rs`
+
 ## 路线图
 
 - [x] M1 文档定稿（需求 / 架构 / UI）
 - [x] M2 核心引擎打通：录音 → VAD → 识别 → 翻译 → TTS（headless CLI）
 - [x] M2.5 GitHub Actions CI + 自动发布
-- [ ] M3 GUI 集成（egui 界面 + 状态机）
-- [ ] M4 v0.1 发布：设置持久化、模型管理、历史导出
+- [x] M3 GUI 集成（egui 界面 + 状态机）
+- [x] M5 引擎库化（lib + UniFFI）+ Android APK 流水线
+- [ ] M4 v0.1 发布：设置持久化、模型管理、历史导出、Release 签名 APK
 
 ## License
 
