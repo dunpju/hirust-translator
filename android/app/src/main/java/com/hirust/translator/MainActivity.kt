@@ -47,9 +47,24 @@ class MainActivity : ComponentActivity() {
     private val dlProgress = mutableStateOf<Pair<Long, Long>?>(null) // downloaded, total(-1未知)
     private val recording = mutableStateOf(false)
     private val accentUs = mutableStateOf(true)
+    // 启动/崩溃错误信息（自报告，避免真机闪退无日志可查）
+    private val bootError = mutableStateOf<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // 未捕获异常落盘，下次启动直接展示
+        val crashFile = java.io.File(filesDir, "crash.log")
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            runCatching {
+                crashFile.writeText("thread=${t.name}\n${e.stackTraceToString()}")
+            }
+            android.os.Process.killProcess(android.os.Process.myPid())
+        }
+        if (crashFile.exists()) {
+            bootError.value = "上次崩溃：\n" + crashFile.readText().take(800)
+            crashFile.delete()
+        }
 
         val filesDir = filesDir.absolutePath
         val cb = object : HirustCallback {
@@ -74,8 +89,12 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        engine = HirustEngine("", filesDir, cb)
-        modelReady.value = engine!!.modelReady()
+        try {
+            engine = HirustEngine("", filesDir, cb)
+            modelReady.value = engine!!.modelReady()
+        } catch (t: Throwable) {
+            bootError.value = "引擎初始化失败：\n${t.stackTraceToString().take(800)}"
+        }
 
         setContent {
             App()
@@ -158,6 +177,12 @@ class MainActivity : ComponentActivity() {
                 noticeText.value?.let {
                     Text("⚠ $it", color = Color(0xFFF59E0B), fontSize = 13.sp)
                     Spacer(Modifier.height(6.dp))
+                }
+
+                // 启动/崩溃错误（自报告）
+                bootError.value?.let {
+                    Text(it, color = red, fontSize = 12.sp, modifier = Modifier.weight(1f, fill = false))
+                    Spacer(Modifier.height(8.dp))
                 }
 
                 // 首次运行：模型下载
