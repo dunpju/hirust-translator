@@ -67,12 +67,23 @@ jobs:
 
       - name: Build native libraries (arm64-v8a + x86_64)
         run: |
-          cargo ndk -t arm64-v8a -t x86_64 -o android/app/src/main/jniLibs build --release --lib --no-default-features
-          # whisper-rs 链接 c++_shared（dylib），必须随包分发，否则真机加载即闪退
-          NDK_SYSROOT="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib"
-          cp "$NDK_SYSROOT/aarch64-linux-android/libc++_shared.so" android/app/src/main/jniLibs/arm64-v8a/
-          cp "$NDK_SYSROOT/x86_64-linux-android/libc++_shared.so" android/app/src/main/jniLibs/x86_64/
-          ls -la android/app/src/main/jniLibs/*/ | grep -E "so$|:"
+          set -o pipefail
+          # 日志落盘；失败时贴到 run Summary（便于无鉴权排障）
+          if cargo ndk -t arm64-v8a -t x86_64 -o android/app/src/main/jniLibs build --release --lib --no-default-features 2>&1 | tee ndk_build.log; then
+            # whisper-rs 链接 c++_shared（dylib），必须随包分发，否则真机加载即闪退
+            NDK_SYSROOT="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib"
+            cp "$NDK_SYSROOT/aarch64-linux-android/libc++_shared.so" android/app/src/main/jniLibs/arm64-v8a/
+            cp "$NDK_SYSROOT/x86_64-linux-android/libc++_shared.so" android/app/src/main/jniLibs/x86_64/
+            ls -la android/app/src/main/jniLibs/*/
+          else
+            {
+              echo '## cargo-ndk 失败日志尾部'
+              echo '```'
+              tail -n 120 ndk_build.log
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
       - name: Generate UniFFI Kotlin bindings
         run: |
