@@ -149,19 +149,24 @@ class MainActivity : ComponentActivity() {
         val eng = engine ?: run { micRunning.set(false); return }
         Thread {
             try {
+                // PCM_16BIT 兼容性最好（部分机型 FLOAT 编码会静默读出全零）
                 val minBuf = AudioRecord.getMinBufferSize(
-                    16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_FLOAT
+                    16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
                 )
                 val rec = AudioRecord(
                     MediaRecorder.AudioSource.VOICE_RECOGNITION, 16000,
-                    AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_FLOAT,
-                    maxOf(minBuf, 16000 * 4)
+                    AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+                    maxOf(minBuf, 16000 * 2)
                 )
-                val buf = FloatArray(1600) // 100ms
+                val buf = ShortArray(1600) // 100ms
+                val floats = FloatArray(1600)
                 rec.startRecording()
                 while (micRunning.get()) {
-                    val n = rec.read(buf, 0, buf.size, AudioRecord.READ_BLOCKING)
-                    if (n > 0) eng.feedPcm(buf.copyOf(n).toList(), 16000u)
+                    val n = rec.read(buf, 0, buf.size)
+                    if (n > 0) {
+                        for (i in 0 until n) floats[i] = buf[i] / 32768f
+                        eng.feedPcm(floats.copyOf(n).toList(), 16000u)
+                    }
                 }
                 rec.stop()
                 rec.release()
@@ -282,6 +287,42 @@ class MainActivity : ComponentActivity() {
                         }
                         Spacer(Modifier.height(8.dp))
                     }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                // 实时电平条（轮询 Rust 引擎电平；诊断 麦克风→引擎 链路）
+                var level by remember { mutableFloatStateOf(0f) }
+                LaunchedEffect(recording.value) {
+                    while (true) {
+                        level = if (recording.value) (engine?.audioLevel() ?: 0f) else 0f
+                        kotlinx.coroutines.delay(100)
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("电平", color = dim, fontSize = 11.sp)
+                    Spacer(Modifier.width(6.dp))
+                    val db = (20 * kotlin.math.log10(level.toDouble() + 1e-8)).toInt()
+                    val lit = (((db + 60.0) / 60.0).coerceIn(0.0, 1.0) * 24).toInt()
+                    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                        repeat(24) { i ->
+                            Box(
+                                Modifier
+                                    .size(width = 6.dp, height = 12.dp)
+                                    .background(
+                                        when {
+                                            !recording.value -> dim.copy(alpha = 0.2f)
+                                            i < lit && i < 16 -> green
+                                            i < lit -> Color(0xFFF59E0B)
+                                            else -> dim.copy(alpha = 0.2f)
+                                        },
+                                        RoundedCornerShape(1.dp)
+                                    )
+                            )
+                        }
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    Text(if (recording.value) "${db}dB" else "", color = dim, fontSize = 11.sp)
                 }
 
                 Spacer(Modifier.height(8.dp))

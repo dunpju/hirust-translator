@@ -230,6 +230,11 @@ impl HirustEngine {
         cvar.notify_all();
     }
 
+    /// 输入电平（RMS，0~1），供 UI 电平条轮询（诊断麦克风→引擎链路）
+    pub fn audio_level(&self) -> f32 {
+        self.state.level()
+    }
+
     /// 停止引擎（不可再启动；Kotlin 侧应重建 HirustEngine）
     pub fn shutdown(&self) {
         *self.feed.tx.lock().unwrap() = None;
