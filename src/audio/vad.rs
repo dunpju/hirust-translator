@@ -126,8 +126,8 @@ impl Vad {
             }
             if self.cal_frames_left == 0 {
                 let noise = (self.cal_acc / self.cal_n.max(1) as f64) as f32;
-                // 下限 0.0015：手机麦克风增益普遍偏低（语音 RMS 可低至 0.003~0.008）
-                self.threshold = (noise * 3.0).clamp(0.0015, 0.05);
+                // 下限 0.0008（约 -62dB）：手机麦克风增益普遍偏低，语音 RMS 可低至千分位
+                self.threshold = (noise * 3.0).clamp(0.0008, 0.05);
                 self.cal_result = Some(self.threshold);
             }
             return;
@@ -153,6 +153,7 @@ impl Vad {
             if voice {
                 let start = self.pending.len() - frame.len();
                 *self.tentative.get_or_insert(start) = self.tentative.unwrap_or(start);
+                // 累积式计数：语音帧 +1、非语音帧 -1——允许音节间隙偶降阈值（手机语音常贴阈值边缘）
                 self.over_frames += 1;
                 if self.over_frames >= self.min_speech_frames {
                     let seg_start = self.tentative.unwrap().saturating_sub(self.pre_roll_samples);
@@ -165,13 +166,14 @@ impl Vad {
                     self.tentative = None;
                 }
             } else {
-                self.over_frames = 0;
+                self.over_frames = self.over_frames.saturating_sub(1);
                 if let Some(t) = self.tentative {
                     // 疑似语音未达最短时长，静音足够久后放弃
                     let since = self.pending.len() - t;
                     let cancel_after = self.silence_frames_needed * FRAME_LEN + self.pre_roll_samples;
                     if since > cancel_after {
                         self.tentative = None;
+                        self.over_frames = 0;
                     }
                 }
                 if self.tentative.is_none() && self.pending.len() > self.pre_roll_samples {
@@ -252,5 +254,23 @@ mod tests {
         let mut out = Vec::new();
         vad.process(&noise, true, &mut out);
         assert!(out.is_empty());
+    }
+
+    #[test]
+    fn triggers_on_low_level_speech_with_dips() {
+        // 手机场景：语音贴阈值边缘（RMS≈0.014 > 0.010），每第 3 帧音节凹陷（RMS≈0.003 < 0.010）
+        // 旧"连续计数"逻辑永不触发；新"累积±1"逻辑应触发
+        let mut vad = Vad::new(&cfg());
+        let mut pcm = Vec::new();
+        for i in 0..30 {
+            let amp = if i % 3 == 2 { 0.004 } else { 0.02 };
+            let frame: Vec<f32> = (0..480).map(|k| amp * ((k as f32) * 0.05).sin()).collect();
+            pcm.extend(frame);
+        }
+        let mut out = Vec::new();
+        vad.process(&pcm, true, &mut out);
+        assert!(vad.is_speaking(), "含音节间隙的低电平语音应触发");
+        vad.process(&vec![0.0f32; 16_000], true, &mut out);
+        assert_eq!(out.len(), 1);
     }
 }
