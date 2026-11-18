@@ -132,6 +132,26 @@ class MainActivity : ComponentActivity() {
         }.start()
     }
 
+    /** 从本地文件导入模型（SAF 选择 ggml-base.bin，零网络依赖） */
+    private fun importModel(uri: android.net.Uri) {
+        Thread {
+            try {
+                val dest = File(filesDir, "ggml-base.bin")
+                contentResolver.openInputStream(uri)!!.use { input ->
+                    dest.outputStream().use { input.copyTo(it) }
+                }
+                if (dest.length() < 141_000_000L) {
+                    val size = dest.length()
+                    dest.delete()
+                    throw IllegalStateException("文件过小（${size / 1000000}MB），请确认选择的是 ggml-base.bin")
+                }
+                runOnUiThread { rebuildEngine() }
+            } catch (e: Exception) {
+                runOnUiThread { noticeText.value = "导入失败: ${e.message}" }
+            }
+        }.start()
+    }
+
     private fun rebuildEngine() {
         stopMic()
         recording.value = false
@@ -205,6 +225,11 @@ class MainActivity : ComponentActivity() {
             hasAudioPermission = granted
             if (granted) toggleRecord(true)
         }
+        val importLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.OpenDocument()
+        ) { uri ->
+            uri?.let { importModel(it) }
+        }
 
         MaterialTheme(colorScheme = darkColorScheme(background = bg, surface = card)) {
             Column(
@@ -232,17 +257,23 @@ class MainActivity : ComponentActivity() {
                     Spacer(Modifier.height(8.dp))
                 }
 
-                // 首次运行：模型下载
+                // 首次运行：模型下载 / 导入
                 if (!modelReady.value) {
                     Card(colors = CardDefaults.cardColors(containerColor = card)) {
                         Column(Modifier.padding(12.dp)) {
-                            Text("首次运行需下载识别模型（base 约 142MB，hf-mirror 镜像）", color = dim, fontSize = 13.sp)
+                            Text("首次运行需识别模型（base 约 142MB）：在线下载，或从本地导入已下载的 ggml-base.bin", color = dim, fontSize = 13.sp)
                             val p = dlProgress.value
                             when {
                                 p == null -> {
                                     Spacer(Modifier.height(6.dp))
-                                    Button(onClick = { startModelDownload() }, enabled = !downloading.get()) {
-                                        Text("开始下载")
+                                    Row {
+                                        Button(onClick = { startModelDownload() }, enabled = !downloading.get()) {
+                                            Text("开始下载")
+                                        }
+                                        Spacer(Modifier.width(8.dp))
+                                        OutlinedButton(onClick = { importLauncher.launch(arrayOf("*/*")) }) {
+                                            Text("导入模型")
+                                        }
                                     }
                                 }
                                 p.second > 0 -> {
@@ -386,40 +417,53 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/** 模型下载器：HttpURLConnection（Android 原生网络栈），镜像优先 + HF 兜底 */
+/** 模型下载器：HttpURLConnection，多镜像逐个尝试（逐源报错） */
 object ModelDownloader {
     private const val FILE = "ggml-base.bin"
-    private val urls = listOf(
-        "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/$FILE",
-        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$FILE",
+    private const val GH_RELEASE = "https://github.com/ggerganov/whisper.cpp/releases/download/v1.7.6/ggml-base-bin.zip"
+    private val sources = listOf(
+        "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/$FILE" to "bin",
+        "https://ghfast.top/$GH_RELEASE" to "zip",
+        GH_RELEASE to "zip",
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$FILE" to "bin",
     )
     // 公称大小 95% 下限（bytes），未知长度时兜底校验
     private const val MIN_BYTES = 141_000_000L
 
     fun download(dest: File, onProgress: (Long, Long) -> Unit) {
-        var lastErr: Exception? = null
-        for (u in urls) {
+        val errors = mutableListOf<String>()
+        for ((url, kind) in sources) {
+            val host = URL(url).host
             try {
-                downloadOne(u, dest, onProgress)
+                val tmp = File(dest.parentFile, "$FILE.part")
+                downloadTo(url, tmp, onProgress)
+                when (kind) {
+                    "zip" -> extractZipEntry(tmp, FILE, dest).also { tmp.delete() }
+                    else -> {
+                        if (tmp.exists() && !tmp.renameTo(dest)) {
+                            tmp.inputStream().use { src -> dest.outputStream().use { src.copyTo(it) } }
+                            tmp.delete()
+                        }
+                    }
+                }
+                if (dest.length() < MIN_BYTES) throw IllegalStateException("文件过小 ${dest.length()}")
                 return
             } catch (e: Exception) {
-                lastErr = e
+                errors.add("$host: ${e.message}")
                 File(dest.parentFile, "$FILE.part").delete()
+                dest.delete()
             }
         }
-        throw lastErr ?: IllegalStateException("无可用下载源")
+        throw IllegalStateException("全部下载源失败：\n" + errors.joinToString("\n"))
     }
 
-    private fun downloadOne(url: String, dest: File, onProgress: (Long, Long) -> Unit) {
-        val tmp = File(dest.parentFile, "$FILE.part")
+    private fun downloadTo(url: String, tmp: File, onProgress: (Long, Long) -> Unit) {
         val conn = URL(url).openConnection() as HttpURLConnection
         conn.connectTimeout = 15000
         conn.readTimeout = 60000
         conn.instanceFollowRedirects = true
         try {
-            if (conn.responseCode !in 200..299) {
-                throw IllegalStateException("HTTP ${conn.responseCode}")
-            }
+            if (conn.responseCode !in 200..299) throw IllegalStateException("HTTP ${conn.responseCode}")
             val total = conn.contentLengthLong // 重定向后仍可能为 -1
             var got = 0L
             conn.inputStream.use { input ->
@@ -434,16 +478,25 @@ object ModelDownloader {
                     }
                 }
             }
-            if (got < MIN_BYTES || (total > 0 && got < total * 95 / 100)) {
-                throw IllegalStateException("下载不完整: $got/$total")
-            }
-            if (tmp.exists() && !tmp.renameTo(dest)) {
-                tmp.inputStream().use { src -> dest.outputStream().use { src.copyTo(it) } }
-                tmp.delete()
-            }
+            if (total > 0 && got < total * 95 / 100) throw IllegalStateException("下载不完整 $got/$total")
         } finally {
             conn.disconnect()
         }
+    }
+
+    /** 从 zip 中找名为 name 的条目解压到 dest（whisper.cpp release 包内路径不定，按后缀匹配） */
+    private fun extractZipEntry(zip: File, name: String, dest: File) {
+        java.util.zip.ZipInputStream(zip.inputStream()).use { zis ->
+            var entry = zis.nextEntry
+            while (entry != null) {
+                if (entry.name.endsWith(name)) {
+                    dest.outputStream().use { zis.copyTo(it) }
+                    return
+                }
+                entry = zis.nextEntry
+            }
+        }
+        throw IllegalStateException("zip 内未找到 $name")
     }
 }
 
