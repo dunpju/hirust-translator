@@ -29,6 +29,8 @@ import androidx.core.content.ContextCompat
 import uniffi.hirust_translator.HirustCallback
 import uniffi.hirust_translator.HirustEngine
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -38,13 +40,14 @@ class MainActivity : ComponentActivity() {
 
     private var engine: HirustEngine? = null
     private val micRunning = AtomicBoolean(false)
+    private val downloading = AtomicBoolean(false)
 
     // Compose 状态（快照状态线程安全，可从回调线程写）
     private val phaseText = mutableStateOf("未启动")
     private val history = mutableStateOf(listOf<Utterance>())
     private val noticeText = mutableStateOf<String?>(null)
     private val modelReady = mutableStateOf(false)
-    private val dlProgress = mutableStateOf<Pair<Long, Long>?>(null) // downloaded, total(-1未知)
+    private val dlProgress = mutableStateOf<Pair<Long, Long>?>(null) // downloaded, total(-1 未知)
     private val recording = mutableStateOf(false)
     private val accentUs = mutableStateOf(true)
     // 启动/崩溃错误信息（自报告，避免真机闪退无日志可查）
@@ -54,7 +57,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         // 未捕获异常落盘，下次启动直接展示
-        val crashFile = java.io.File(filesDir, "crash.log")
+        val crashFile = File(filesDir, "crash.log")
         Thread.setDefaultUncaughtExceptionHandler { t, e ->
             runCatching {
                 crashFile.writeText("thread=${t.name}\n${e.stackTraceToString()}")
@@ -66,7 +69,15 @@ class MainActivity : ComponentActivity() {
             crashFile.delete()
         }
 
-        val filesDir = filesDir.absolutePath
+        engine = createEngine()
+        modelReady.value = engine?.modelReady() ?: false
+
+        setContent {
+            App()
+        }
+    }
+
+    private fun createEngine(): HirustEngine? {
         val cb = object : HirustCallback {
             override fun onUtterance(ts: String, zh: String?, en: String, engine: String) {
                 history.value = history.value + Utterance(ts, zh, en)
@@ -77,7 +88,11 @@ class MainActivity : ComponentActivity() {
             }
 
             override fun onNotice(kind: Int, msg: String) {
-                if (kind >= 1) noticeText.value = msg
+                if (kind >= 1) {
+                    // 模型未就绪时的引擎初始化失败属预期流程（等待下载），不弹错误
+                    if (!modelReady.value && msg.contains("识别引擎初始化失败")) return
+                    noticeText.value = msg
+                }
             }
 
             override fun onMp3(bytes: ByteArray) {
@@ -88,24 +103,50 @@ class MainActivity : ComponentActivity() {
                 dlProgress.value = downloaded.toLong() to (total?.toLong() ?: -1L)
             }
         }
-
-        try {
-            engine = HirustEngine("", filesDir, cb)
-            modelReady.value = engine!!.modelReady()
+        return try {
+            HirustEngine("", filesDir.absolutePath, cb)
         } catch (t: Throwable) {
             bootError.value = "引擎初始化失败：\n${t.stackTraceToString().take(800)}"
+            null
         }
+    }
 
-        setContent {
-            App()
-        }
+    // ── 模型下载（Kotlin 原生 HTTP，避开 Rust 网络栈在移动端的不确定性） ──
+
+    private fun startModelDownload() {
+        if (!downloading.compareAndSet(false, true)) return
+        dlProgress.value = 0L to -1L
+        Thread {
+            try {
+                val dest = File(filesDir, "ggml-base.bin")
+                ModelDownloader.download(dest) { got, total ->
+                    dlProgress.value = got to total
+                }
+                // 下载完成：重建引擎（旧引擎识别线程已因模型缺失退出）
+                runOnUiThread { rebuildEngine() }
+            } catch (e: Exception) {
+                runOnUiThread { noticeText.value = "模型下载失败: ${e.message}" }
+            } finally {
+                downloading.set(false)
+            }
+        }.start()
+    }
+
+    private fun rebuildEngine() {
+        stopMic()
+        recording.value = false
+        engine?.shutdown()
+        engine = createEngine()
+        modelReady.value = engine?.modelReady() ?: false
+        noticeText.value = null
+        dlProgress.value = null
     }
 
     // ── 麦克风 ────────────────────────────────────────────────
 
     private fun startMic() {
         if (micRunning.getAndSet(true)) return
-        val eng = engine ?: return
+        val eng = engine ?: run { micRunning.set(false); return }
         Thread {
             try {
                 val minBuf = AudioRecord.getMinBufferSize(
@@ -162,7 +203,8 @@ class MainActivity : ComponentActivity() {
 
         MaterialTheme(colorScheme = darkColorScheme(background = bg, surface = card)) {
             Column(
-                Modifier.fillMaxSize().background(bg).padding(16.dp)
+                // 系统栏留白：避免被手势条/三键导航遮挡
+                Modifier.fillMaxSize().background(bg).systemBarsPadding().padding(16.dp)
             ) {
                 // 顶部状态
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -181,7 +223,7 @@ class MainActivity : ComponentActivity() {
 
                 // 启动/崩溃错误（自报告）
                 bootError.value?.let {
-                    Text(it, color = red, fontSize = 12.sp, modifier = Modifier.weight(1f, fill = false))
+                    Text(it, color = red, fontSize = 12.sp)
                     Spacer(Modifier.height(8.dp))
                 }
 
@@ -190,21 +232,29 @@ class MainActivity : ComponentActivity() {
                     Card(colors = CardDefaults.cardColors(containerColor = card)) {
                         Column(Modifier.padding(12.dp)) {
                             Text("首次运行需下载识别模型（base 约 142MB，hf-mirror 镜像）", color = dim, fontSize = 13.sp)
-                            dlProgress.value?.let { (got, total) ->
-                                Spacer(Modifier.height(6.dp))
-                                if (total > 0) {
+                            val p = dlProgress.value
+                            when {
+                                p == null -> {
+                                    Spacer(Modifier.height(6.dp))
+                                    Button(onClick = { startModelDownload() }, enabled = !downloading.get()) {
+                                        Text("开始下载")
+                                    }
+                                }
+                                p.second > 0 -> {
+                                    Spacer(Modifier.height(6.dp))
                                     LinearProgressIndicator(
-                                        progress = { got.toFloat() / total },
+                                        progress = { p.first.toFloat() / p.second },
                                         modifier = Modifier.fillMaxWidth()
                                     )
-                                    Text("${got / 1000000} / ${total / 1000000} MB", color = dim, fontSize = 12.sp)
-                                } else {
-                                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                                    Text(
+                                        "${p.first / 1000000} / ${p.second / 1000000} MB",
+                                        color = dim, fontSize = 12.sp
+                                    )
                                 }
-                            } ?: run {
-                                Spacer(Modifier.height(6.dp))
-                                Button(onClick = { engine?.downloadModel() }) {
-                                    Text("开始下载")
+                                else -> {
+                                    Spacer(Modifier.height(6.dp))
+                                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                                    Text("已下载 ${p.first / 1000000} MB（总大小未知）", color = dim, fontSize = 12.sp)
                                 }
                             }
                         }
@@ -254,7 +304,7 @@ class MainActivity : ComponentActivity() {
                         Text(if (recording.value) "■ 停止录音" else "● 开始录音", fontSize = 16.sp)
                     }
                 }
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(10.dp))
                 Row(horizontalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {
                     FilterChip(
                         selected = accentUs.value,
@@ -286,6 +336,67 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         stopMic()
         engine?.shutdown()
+    }
+}
+
+/** 模型下载器：HttpURLConnection（Android 原生网络栈），镜像优先 + HF 兜底 */
+object ModelDownloader {
+    private const val FILE = "ggml-base.bin"
+    private val urls = listOf(
+        "https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/$FILE",
+        "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$FILE",
+    )
+    // 公称大小 95% 下限（bytes），未知长度时兜底校验
+    private const val MIN_BYTES = 141_000_000L
+
+    fun download(dest: File, onProgress: (Long, Long) -> Unit) {
+        var lastErr: Exception? = null
+        for (u in urls) {
+            try {
+                downloadOne(u, dest, onProgress)
+                return
+            } catch (e: Exception) {
+                lastErr = e
+                File(dest.parentFile, "$FILE.part").delete()
+            }
+        }
+        throw lastErr ?: IllegalStateException("无可用下载源")
+    }
+
+    private fun downloadOne(url: String, dest: File, onProgress: (Long, Long) -> Unit) {
+        val tmp = File(dest.parentFile, "$FILE.part")
+        val conn = URL(url).openConnection() as HttpURLConnection
+        conn.connectTimeout = 15000
+        conn.readTimeout = 60000
+        conn.instanceFollowRedirects = true
+        try {
+            if (conn.responseCode !in 200..299) {
+                throw IllegalStateException("HTTP ${conn.responseCode}")
+            }
+            val total = conn.contentLengthLong // 重定向后仍可能为 -1
+            conn.inputStream.use { input ->
+                tmp.outputStream().use { out ->
+                    val buf = ByteArray(64 * 1024)
+                    var got = 0L
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        got += n
+                        onProgress(got, if (total > 0) total else -1L)
+                    }
+                }
+            }
+            if (got < MIN_BYTES || (total > 0 && got < total * 95 / 100)) {
+                throw IllegalStateException("下载不完整: $got/$total")
+            }
+            if (tmp.exists() && !tmp.renameTo(dest)) {
+                tmp.inputStream().use { src -> dest.outputStream().use { src.copyTo(it) } }
+                tmp.delete()
+            }
+        } finally {
+            conn.disconnect()
+        }
     }
 }
 
