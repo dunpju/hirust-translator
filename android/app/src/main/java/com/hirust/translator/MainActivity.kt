@@ -293,11 +293,17 @@ class MainActivity : ComponentActivity() {
 
                 // 实时电平条（轮询 Rust 引擎电平；诊断 麦克风→引擎 链路）
                 var level by remember { mutableFloatStateOf(0f) }
+                var vadState by remember { mutableStateOf("") }
                 LaunchedEffect(recording.value) {
                     while (true) {
                         level = if (recording.value) (engine?.audioLevel() ?: 0f) else 0f
-                        kotlinx.coroutines.delay(100)
+                        vadState = if (recording.value) (engine?.vadState() ?: "") else ""
+                        kotlinx.coroutines.delay(150)
                     }
+                }
+                if (recording.value) {
+                    Text(vadState, color = dim, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                    Spacer(Modifier.height(4.dp))
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("电平", color = dim, fontSize = 11.sp)

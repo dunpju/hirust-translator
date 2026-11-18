@@ -235,6 +235,19 @@ impl HirustEngine {
         self.state.level()
     }
 
+    /// VAD 诊断状态（阈值/是否说话中/切段/识别计数），排障用
+    pub fn vad_state(&self) -> String {
+        let s = &self.state;
+        format!(
+            "阈值 {:.4} | 说话中 {} | 已切段 {} | 识别 {} | 空段 {}",
+            f32::from_bits(s.vad_threshold.load(Ordering::Relaxed)),
+            if s.vad_speaking.load(Ordering::Relaxed) { "是" } else { "否" },
+            s.segments_cut.load(Ordering::Relaxed),
+            s.asr_done.load(Ordering::Relaxed),
+            s.asr_empty.load(Ordering::Relaxed),
+        )
+    }
+
     /// 停止引擎（不可再启动；Kotlin 侧应重建 HirustEngine）
     pub fn shutdown(&self) {
         *self.feed.tx.lock().unwrap() = None;

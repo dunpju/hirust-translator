@@ -13,7 +13,7 @@ use crate::translate::{self, llm::LlmClient};
 use crate::tts::{EdgeTts, TtsRequest};
 use anyhow::Result;
 use std::any::Any;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex, RwLock};
 use std::time::Instant;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -75,6 +75,13 @@ pub struct SharedState {
     pub tts_playing: AtomicBool,
     /// 输入电平（f32 位模式），供 UI 电平条读取
     pub level: AtomicU32,
+    /// VAD 触发阈值（f32 位模式，校准后更新）
+    pub vad_threshold: AtomicU32,
+    pub vad_speaking: AtomicBool,
+    /// 累计切段 / 识别成功 / 识别为空（诊断 UI 用）
+    pub segments_cut: AtomicUsize,
+    pub asr_done: AtomicUsize,
+    pub asr_empty: AtomicUsize,
     voice_us: RwLock<String>,
     voice_gb: RwLock<String>,
     rate: RwLock<String>,
@@ -234,6 +241,11 @@ pub fn start_with(
         running: AtomicBool::new(true),
         tts_playing: AtomicBool::new(false),
         level: AtomicU32::new(0),
+        vad_threshold: AtomicU32::new(cfg.vad.energy_threshold.to_bits()),
+        vad_speaking: AtomicBool::new(false),
+        segments_cut: AtomicUsize::new(0),
+        asr_done: AtomicUsize::new(0),
+        asr_empty: AtomicUsize::new(0),
         voice_us: RwLock::new(cfg.tts.voice_us.clone()),
         voice_gb: RwLock::new(cfg.tts.voice_gb.clone()),
         rate: RwLock::new(cfg.tts.rate.clone()),
@@ -289,9 +301,11 @@ pub fn start_with(
                     let lv = if paused { 0.0 } else { vad.level() };
                     state.level.store(lv.to_bits(), Ordering::Relaxed);
                     if let Some(th) = vad.take_calibration_result() {
+                        state.vad_threshold.store(th.to_bits(), Ordering::Relaxed);
                         let _ = state.events.send(EngineEvent::Calibrated(th));
                     }
                     let speaking = vad.is_speaking();
+                    state.vad_speaking.store(speaking, Ordering::Relaxed);
                     if speaking != was_speaking {
                         was_speaking = speaking;
                         match (state.phase(), speaking) {
@@ -303,6 +317,7 @@ pub fn start_with(
                         }
                     }
                     for seg in segments {
+                        state.segments_cut.fetch_add(1, Ordering::Relaxed);
                         let _ = seg_tx.send(seg);
                     }
                 }
@@ -409,9 +424,11 @@ pub fn start_with(
                     }
 
                     if en.trim().is_empty() {
+                        state.asr_empty.fetch_add(1, Ordering::Relaxed);
                         state.set_phase(Phase::Listening);
                         continue;
                     }
+                    state.asr_done.fetch_add(1, Ordering::Relaxed);
 
                     let ts = chrono::Local::now().format("%H:%M:%S").to_string();
                     let _ = state.events.send(EngineEvent::Utterance {

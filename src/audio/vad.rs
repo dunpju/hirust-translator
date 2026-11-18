@@ -126,7 +126,8 @@ impl Vad {
             }
             if self.cal_frames_left == 0 {
                 let noise = (self.cal_acc / self.cal_n.max(1) as f64) as f32;
-                self.threshold = (noise * 3.0).clamp(0.004, 0.05);
+                // 下限 0.0015：手机麦克风增益普遍偏低（语音 RMS 可低至 0.003~0.008）
+                self.threshold = (noise * 3.0).clamp(0.0015, 0.05);
                 self.cal_result = Some(self.threshold);
             }
             return;
