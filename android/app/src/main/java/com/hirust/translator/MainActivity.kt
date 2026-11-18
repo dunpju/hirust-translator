@@ -374,10 +374,10 @@ object ModelDownloader {
                 throw IllegalStateException("HTTP ${conn.responseCode}")
             }
             val total = conn.contentLengthLong // 重定向后仍可能为 -1
+            var got = 0L
             conn.inputStream.use { input ->
                 tmp.outputStream().use { out ->
                     val buf = ByteArray(64 * 1024)
-                    var got = 0L
                     while (true) {
                         val n = input.read(buf)
                         if (n < 0) break
