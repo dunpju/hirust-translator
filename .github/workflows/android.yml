@@ -38,6 +38,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          # 换前缀强制作废旧缓存（旧缓存按自装 NDK 27.0 配置，会导致 cmake 重配置踩坑）
+          prefix-key: "ndk-default"
 
       - name: Install cargo-ndk
         uses: taiki-e/install-action@v2
@@ -54,16 +56,15 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      # runner 预装 Android SDK（$ANDROID_HOME）；不再用 android-actions/setup-android
-      #（ubuntu-latest 已迁 Ubuntu 26，setup-android@v3 不兼容）
-      - name: Install NDK / SDK components & accept licenses
+      # SDK 组件：runner 已预装 NDK（$ANDROID_NDK_ROOT）——不再自装其它版本，
+      # 全链路统一预装 NDK，避免 ANDROID_NDK_HOME/ROOT 不一致触发 cmake 重配置
+      - name: Install SDK components & accept licenses
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_HOME=$ANDROID_HOME ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
           export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/cmdline-tools/bin:$PATH"
           command -v sdkmanager || { echo "sdkmanager 不存在"; exit 1; }
           yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager --install "ndk;27.0.12077973" "platforms;android-35" "build-tools;35.0.0" > /dev/null
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.0.12077973" >> "$GITHUB_ENV"
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0" > /dev/null
 
       - name: Build native libraries (arm64-v8a + x86_64)
         run: |
@@ -71,7 +72,7 @@ jobs:
           # 日志落盘；失败时贴到 run Summary（便于无鉴权排障）
           if cargo ndk -t arm64-v8a -t x86_64 -o android/app/src/main/jniLibs build --release --lib --no-default-features 2>&1 | tee ndk_build.log; then
             # whisper-rs 链接 c++_shared（dylib），必须随包分发，否则真机加载即闪退
-            NDK_SYSROOT="$ANDROID_HOME/ndk/27.0.12077973/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib"
+            NDK_SYSROOT="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib"
             cp "$NDK_SYSROOT/aarch64-linux-android/libc++_shared.so" android/app/src/main/jniLibs/arm64-v8a/
             cp "$NDK_SYSROOT/x86_64-linux-android/libc++_shared.so" android/app/src/main/jniLibs/x86_64/
             ls -la android/app/src/main/jniLibs/*/
