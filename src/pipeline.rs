@@ -77,6 +77,8 @@ pub struct SharedState {
     pub level: AtomicU32,
     /// VAD 触发阈值（f32 位模式，校准后更新）
     pub vad_threshold: AtomicU32,
+    /// 用户强制阈值（f32 位模式；0 = 自动/自适应）
+    pub vad_threshold_override: AtomicU32,
     pub vad_speaking: AtomicBool,
     /// 累计切段 / 识别成功 / 识别为空（诊断 UI 用）
     pub segments_cut: AtomicUsize,
@@ -242,6 +244,7 @@ pub fn start_with(
         tts_playing: AtomicBool::new(false),
         level: AtomicU32::new(0),
         vad_threshold: AtomicU32::new(cfg.vad.energy_threshold.to_bits()),
+        vad_threshold_override: AtomicU32::new(0),
         vad_speaking: AtomicBool::new(false),
         segments_cut: AtomicUsize::new(0),
         asr_done: AtomicUsize::new(0),
@@ -296,8 +299,15 @@ pub fn start_with(
                             && state.tts_playing.load(Ordering::Relaxed));
                     let mut pcm16k = Vec::new();
                     resampler.process(&chunk, &mut pcm16k);
+                    // 用户灵敏度档位覆盖（>0 时强制阈值）
+                    let ov = f32::from_bits(state.vad_threshold_override.load(Ordering::Relaxed));
+                    if ov > 0.0 {
+                        vad.set_threshold(ov);
+                    }
                     let mut segments = Vec::new();
                     vad.process(&pcm16k, allow, &mut segments);
+                    // 同步当前阈值给诊断 UI
+                    state.vad_threshold.store(vad.threshold().to_bits(), Ordering::Relaxed);
                     let lv = if paused { 0.0 } else { vad.level() };
                     state.level.store(lv.to_bits(), Ordering::Relaxed);
                     if let Some(th) = vad.take_calibration_result() {

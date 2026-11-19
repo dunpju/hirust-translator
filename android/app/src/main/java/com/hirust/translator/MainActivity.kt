@@ -50,6 +50,7 @@ class MainActivity : ComponentActivity() {
     private val dlProgress = mutableStateOf<Pair<Long, Long>?>(null) // downloaded, total(-1 未知)
     private val recording = mutableStateOf(false)
     private val accentUs = mutableStateOf(true)
+    private val sensLevel = mutableStateOf(-1) // -1 自动 / 2 高 / 1 中 / 0 低
     // 启动/崩溃错误信息（自报告，避免真机闪退无日志可查）
     private val bootError = mutableStateOf<String?>(null)
 
@@ -340,7 +341,8 @@ class MainActivity : ComponentActivity() {
                     Text("电平", color = dim, fontSize = 11.sp)
                     Spacer(Modifier.width(6.dp))
                     val db = (20 * kotlin.math.log10(level.toDouble() + 1e-8)).toInt()
-                    val lit = (((db + 60.0) / 60.0).coerceIn(0.0, 1.0) * 24).toInt()
+                    // 量程 -80..0 dB：极低电平（手机低增益）也可见
+                    val lit = (((db + 80.0) / 80.0).coerceIn(0.0, 1.0) * 24).toInt()
                     Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                         repeat(24) { i ->
                             Box(
@@ -360,6 +362,26 @@ class MainActivity : ComponentActivity() {
                     }
                     Spacer(Modifier.width(8.dp))
                     Text(if (recording.value) "${db}dB" else "", color = dim, fontSize = 11.sp)
+                }
+
+                // 灵敏度档位（说话中一直为"否"时，手动调高）
+                if (recording.value) {
+                    Spacer(Modifier.height(4.dp))
+                    Row(horizontalArrangement = Arrangement.Center, modifier = Modifier.fillMaxWidth()) {
+                        Text("灵敏度", color = dim, fontSize = 12.sp)
+                        Spacer(Modifier.width(6.dp))
+                        listOf(-1 to "自动", 2 to "高", 1 to "中", 0 to "低").forEach { (lv, name) ->
+                            FilterChip(
+                                selected = sensLevel.value == lv,
+                                onClick = {
+                                    sensLevel.value = lv
+                                    engine?.setVadSensitivity(lv)
+                                },
+                                label = { Text(name, fontSize = 11.sp) }
+                            )
+                            Spacer(Modifier.width(4.dp))
+                        }
+                    }
                 }
 
                 Spacer(Modifier.height(8.dp))

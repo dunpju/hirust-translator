@@ -248,6 +248,17 @@ impl HirustEngine {
         )
     }
 
+    /// 灵敏度档位：2=高(0.0003) 1=中(0.0008) 0=低(0.002) -1=自动（校准+自适应噪声底）
+    pub fn set_vad_sensitivity(&self, level: i32) {
+        let t: f32 = match level {
+            2 => 0.0003,
+            1 => 0.0008,
+            0 => 0.002,
+            _ => 0.0, // 自动
+        };
+        self.state.vad_threshold_override.store(t.to_bits(), Ordering::Relaxed);
+    }
+
     /// 停止引擎（不可再启动；Kotlin 侧应重建 HirustEngine）
     pub fn shutdown(&self) {
         *self.feed.tx.lock().unwrap() = None;

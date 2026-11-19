@@ -14,6 +14,8 @@ const TAIL_PAD_MS: usize = 200; // 断句后尾部保留
 
 pub struct Vad {
     threshold: f32,
+    /// 自适应噪声底（EMA）：待机期非语音帧缓慢吸收，阈值只降不升（可自愈被污染的校准）
+    noise_ema: f32,
     silence_frames_needed: usize,
     min_speech_frames: usize,
     max_segment_samples: usize,
@@ -43,10 +45,14 @@ pub struct Vad {
     level: f32,
 }
 
+/// 自适应阈值下限（约 -70dB，兼容极低增益麦克风）
+const THRESHOLD_FLOOR: f32 = 0.0003;
+
 impl Vad {
     pub fn new(cfg: &VadConfig) -> Self {
         Self {
             threshold: cfg.energy_threshold,
+            noise_ema: cfg.energy_threshold / 3.0,
             silence_frames_needed: (cfg.silence_ms as usize / 30).max(1),
             min_speech_frames: (cfg.min_speech_ms as usize / 30).max(1),
             max_segment_samples: cfg.max_segment_ms as usize * SAMPLES_PER_MS,
@@ -69,7 +75,12 @@ impl Vad {
         }
     }
 
-    /// 启动环境噪声校准（静默 duration_ms 后阈值 = max(噪声×3, 0.004)）
+    /// 外部强制阈值（用户灵敏度档位；用于覆盖自动校准/自适应）
+    pub fn set_threshold(&mut self, t: f32) {
+        self.threshold = t.clamp(THRESHOLD_FLOOR, 0.05);
+    }
+
+    /// 启动环境噪声校准（静默 duration_ms 后阈值 = max(噪声×3, 下限)）
     pub fn begin_calibration(&mut self, duration_ms: u64) {
         self.cal_frames_left = (duration_ms as usize / 30).max(1);
         self.cal_acc = 0.0;
@@ -126,8 +137,9 @@ impl Vad {
             }
             if self.cal_frames_left == 0 {
                 let noise = (self.cal_acc / self.cal_n.max(1) as f64) as f32;
-                // 下限 0.0008（约 -62dB）：手机麦克风增益普遍偏低，语音 RMS 可低至千分位
-                self.threshold = (noise * 3.0).clamp(0.0008, 0.05);
+                // 下限 THRESHOLD_FLOOR：手机麦克风增益普遍偏低
+                self.threshold = (noise * 3.0).clamp(THRESHOLD_FLOOR, 0.05);
+                self.noise_ema = noise;
                 self.cal_result = Some(self.threshold);
             }
             return;
@@ -149,6 +161,15 @@ impl Vad {
         let voice = rms >= self.threshold;
 
         if !self.speaking {
+            // 自适应噪声底：非语音帧吸收进 EMA；阈值=max(噪声×6, 下限)，且只降不升
+            // （被校准期说话污染的过高阈值，会在数秒安静后自动回落）
+            if !voice {
+                self.noise_ema = 0.97 * self.noise_ema + 0.03 * rms;
+                let candidate = (self.noise_ema * 6.0).clamp(THRESHOLD_FLOOR, 0.05);
+                if candidate < self.threshold {
+                    self.threshold = candidate;
+                }
+            }
             self.pending.extend_from_slice(frame);
             if voice {
                 let start = self.pending.len() - frame.len();
